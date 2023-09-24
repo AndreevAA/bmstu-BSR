@@ -1,0 +1,741 @@
+<title>CS267: Notes for Lecture 27, Apr 23 1996</title>
+
+<h1>UNDER CONSTRUCTION</h1>
+
+<h1>CS267: Lecture 27, Apr 23 1996</h1>
+
+<h1>Sparse Gaussian Elimination</h1>
+
+<h2>Table of Contents</h2>
+<menu>
+<li><a href="#link_1">
+Motivation</a>
+<li><a href="#link_2">
+  Overview of Design Options for Sparse Gaussian Elimination</a>
+  <menu>
+  <li><a href="#link_2.1">
+     Cholesky versus LU Decomposition</a>
+  <li><a href="#link_2.2">
+     Sparse Matrix Storage Schemes</a>
+  <li><a href="#link_2.3">
+     Left looking versus Right looking Cholesky</a>
+  <li><a href="#link_2.4">
+     The Elimination Tree and Sources of Parallelism</a>
+  <li><a href="#link_2.5">
+     Choosing a permutation P</a>
+     <menu>
+     <li><a href="#link_2.5.1">
+        Minimum Degree -- <i>Under construction</i></a>
+     <li><a href="#link_2.5.2">
+        Reverse Cuthill-McKee -- <i>Under construction</i> (Breadth First Search)</a>
+     <li><a href="#link_2.5.2">
+        Nested Dissection (Graph Partitioning) -- <i>Under construction</i></a>
+     </menu>
+  <li><a href="#link_2.6">
+     Left looking Cholesky: Columns versus Supernodes -- <i>Under construction</i></a>
+  <li><a href="#link_2.7">
+     Right looking Cholesky: Multifrontal -- <i>Under construction</i></a>
+  </menu>
+<li><a href="#link_3">
+   Parallel Sparse Choleksy on Shared Memory -- <i>Under construction</i></a>
+<li><a href="#link_4">
+   Parallel Sparse Choleksy on Distributed Memory -- <i>Under construction</i></a>
+<li><a href="#link_5">
+   References -- <i>Under construction</i></a>
+</menu>
+
+<h2><a name="link_1">Motivation</h2>
+
+A <i>sparse matrix</i> is one with a large number of zero entries,
+enough to make it worthwhile modifying algorithms for dense matrices
+to exploit the presence of these zeros, by not storing them, and by
+not doing arithmetic with them.
+<p>
+For example, in an earlier
+<a href="http://www.cs.berkeley.edu/~demmel/cs267/lecture24/lecture24.html">
+lecture on solving the discrete Poisson equation</a>,
+we presented a 
+<a href="http://www.cs.berkeley.edu/~demmel/cs267/lecture24/lecture24.html#link_2">table</a> 
+of complexities of solving this equation on an n-by-n grid 
+(a linear system A*x=b with N=n<sup>2</sup> unknowns). Treating the matrix 
+A as dense leads to an algorithm taking O(N<sup>3</sup>) flops. 
+
+<p>
+The simplest way to exploit sparsity in A is to treat is
+as a <i>band matrix</i>, with nonzeros only in a diagonal band
+2n+1 diagonals wide (see the picture below).
+It turns out that we can do Gaussian elimination without
+pivoting on A
+(reordering the rows of A for numerical stability reasons);
+we discuss why below.
+In this case, we can show that it is possible to
+implement Gaussian elimination so as to
+<menu>
+<li> store no entries outside the diagonal band of A, and
+<li> do no arithmetic with any entries outside this diagonal band.
+</menu>
+This significantly reduces both the storage 
+(from O(N<sup>2</sup>) to O(N*n) = O(N<sup>3/2</sup>))
+and the floating point operation count
+(from O(N<sup>3</sup>) to O(N<sup>2</sup>)). 
+
+<p>
+For example, the following
+figure shows the matrix A for a 7-b-7 grid (a 49-by-49 matrix)
+and its factors A = L*U. In this case, we
+can take L=U<sup>T</sup>, a variation of Gaussian elimination called
+<i>Cholesky</i> (see below for details). The nonzero entries of L that
+are not also nonzero entries of A are called <i>fill-in</i>, and are
+colored red in the figure. The number of nonzero entries is given as
+"nz=..." in the captions. The number of floating point operations
+(done only on nonzero operands) is also given in the title as
+"flops= ...".  
+As can be seen, the number of nonzeros is 
+349/(.5*49<sup>2</sup>) = .3 of what a dense triangular matrix would require,
+and costs about 2643/(49<sup>3</sup>/3) = .067 times as many flops.
+
+<p>
+<center><img src="Grid0707natural.gif"></center>
+<p>
+
+Given L and U, we would then go ahead and
+solve A*x = L*U*x = b by solving the two triangular systems
+L*y = b for y and U*x = y for x. 
+
+<p>
+Alternatively, we could consider solving the equivalent <i>permuted</i> 
+linear system PAP<sup>T</sup>Px = Pb, or
+A<sub>1</sub>*x<sub>1</sub>=b<sub>1</sub>. 
+Here P is a <i>permutation matrix</i> (so P<sup>T</sup>P = I), and
+b<sub>1</sub> = P*b,
+i.e. b<sub>1</sub> has the same entries as b but in permuted 
+order. Similarly x<sub>1</sub>=P*x, i.e. x<sub>1</sub> is x 
+permuted the same way as b<sub>1</sub>. Finally, 
+A<sub>1</sub>=P*A*P<sup>T</sup>, or A with its rows and columns
+permuted the same way as x<sub>1</sub> and b<sub>1</sub>. If A is
+symmetric, so is A<sub>1</sub>. In the following figure, we
+consider a special permutation P called <i>nested dissection ordering</i>,
+which is computed using the 
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture18/lecture18.html">
+graph partitioning</a> algorithms we discussed in earlier lectures, and
+which we will explain in more detail below. Note that L has fewer nonzeros
+(288 nonzeros versus 349) and requires fewer flops to compute
+(1926 versus 2643).
+
+<p>
+<center><img src="Grid0707nstdis.gif"></center>
+<p>
+
+The savings from permuting grow as n grows. For example, with n=63
+(N = n<sup>2</sup> = 3969), the nonzero count is 250109 versus 85416,
+and the flop count is about 16 million versus 3.6 million, 
+for the "natural" order versus "nested dissection" order, respectively. 
+More generally, one can show that with nested dissection the storage 
+grows like O(N log N) versus O(N<sup>2</sup>) for natural order, and the
+flop count grows like O(N<sup>3/2</sup>) versus O(N<sup>2</sup>).
+Indeed, it is a fact that "nested dissection" order is asymptotially
+optimal, in the sense that the functions O(N log N) and
+O(N<sup>3/2</sup>) can be made no smaller by any other choice of
+permutation P. 
+
+<p>
+Later, we will also see that nested dissection also leads to 
+significantly more parallelism than the natural order.
+
+
+<h2><a name="link_2">Overview of Design Options for 
+Sparse Gaussian Elimination</h2>
+
+There is a large <i>design space</i> of algorithms for
+implementing sparse Gaussian elimination. No one approach
+is best in all situations.
+In this section 
+we will explore this space, and later pick a few points
+for detailed examination.
+
+<h3><a name="link_2.1">Cholesky versus LU Decomposition</h3>
+
+Recalling our 
+<a href="../lecture12/lecture12.html#link_3">review of Gaussian elimination</a>
+from an earlier lecture, we know that the result of <i>Gaussian elimination
+with pivoting</i> on a nonsingular matrix A can be written
+A = P*L*U, where L is a lower triangular matrix, U is upper triangular,
+and P is a permutation. P is chosen during factorization to keep the
+<i>pivots</i> (diagonal entries of U) large. Without P, Gaussian elimination
+will fail (or be numerically unstable) on simple, well-behaved matrices like
+<pre>
+      A = [ eps  1  ]    where eps is 0 or very small.
+          [  1  eps ]
+</pre>
+
+<p>
+There is an important class of matrices, which includes the discrete
+Poisson equation, where this factorization simplifies considerably.
+We define a matrix A to be <i>symmetric positive definite (spd)</i>
+if it is symmetric A = A<sup>T</sup> and positive definite 
+(all its eigenvalues are positive). Equivalent definitions of positive
+definiteness are that the determinants of all leading principal submatrices
+are positive (det(A(1:i,1:i))>0 for i=1,...,n), and that
+A has a square root L, such that L is lower triangular and
+A = L*L<sup>T</sup>. 
+
+<p>
+This last equivalent definition implies that we can do Gaussian
+elimination A = L*U <i>without pivoting</i>, and furthermore take 
+U<sup>T</sup>=L. The factorization A = L*L<sup>T</sup> is 
+called the <i>Cholesky factorization</i>, and L is called the 
+<i>Cholesky factor</i> of L. 
+
+<p>
+An operation count reveals that Cholesky on a dense spd matrix
+requires half the flops (n<sup>3</sup>/3 versus 2*n<sup>3</sup>/3) 
+as standard Gaussian elimination, and also requires only half the space, 
+since only the lower triangle of A and L must be stored. 
+Symmetric positive definite matrices are
+extremely common in applications (for example, as <i>mass</i> and
+<i>stiffness</i> matrices in structural mechanics).
+
+<p>
+If A is spd, then so is P*A*P<sup>T</sup>
+for any permutation matrix P. This is true because
+P*A*P<sup>T</sup> is symmetric if A is, and also has the same
+(positive) eigenvalues as A.
+Thus, Cholesky works on A if and only if it works
+on P*A*P<sup>T</sup> for any P.
+We can equivalently say that
+Cholesky works equally well with <i>any diagonal pivoting scheme</i>,
+since P*A*P<sup>T</sup>, which is A with the same permutation applied
+to its rows and its columns, has the same diagonal as A but in a permuted
+order determined by P. As mentioned above, the correct choice of
+P can greatly impact 
+<menu>
+<li> the storage needed for L,
+<li> the flop count to compute L, and
+<li> the parallelism available in computing L.
+</menu>
+Later we will exploit our freedom to choose P to optimize these quantities.
+Choosing the "optimal" P turns out to be NP-complete, and so too expensive
+to solve exactly. Theresfore, we will rely on heuristics to choose a "good" P.
+
+<p>
+It turns out that sparse Cholesky is significantly simpler to implement
+than sparse Gaussian elimination with pivoting, because the choice of 
+permutation matrix P does not depend on intermediate values computed during 
+the factorizationi process, and so can be determined ahead of time to 
+optimize the three quantities listed above. For this reason, we will
+initially concentrate on sparse Cholesky, and return to sparse
+Gaussian elimination with pivoting in a future lecture. 
+
+<p>
+For sparse Cholesky, we can divide the implemenation into 4 phases:
+<ol>
+<li> <i>Choose the permutation P</i> to optimize the criteria listed above,
+<li> <i>Symbolic factorization</i>: Build the data structures necessary to
+     compute and store L.
+<li> <i>Numeric Factorization</i>: Perform the factorization itself.
+<li> <i>Triangular solve</i>: 
+     Solve L*y = b for y and L<sup>T</sup>*x = y for x. 
+</ol>
+
+For most problems, phase 3 takes the most time, and is the most
+important to parallelize, although there has been research in parallelizing
+all four stages. We will limit ourselves to discussing parallelization
+of stage 3.
+
+<h3><a name="link_2.2">Sparse Matrix Storage Schemes</h3>
+
+There are a large variety of ways to store sparse matrices, depending
+on the application in which they arise. The simplest way we could
+imagine is as a <i>list of triples</i> (i,j,a<sub>ij</sub>), one for
+each nonzero a<sub>ij</sub> in A. The trouble with this simple 
+representation is that it is hard to access just one row or one column
+of A, as required by Gaussian elimination,
+without inefficiently searching through the whole list.
+So we might instead organize this list
+as a <i>linked list</i>, with entries 
+<pre>
+  ( i, j, a<sub>ij</sub>, next_i, last_i, next_j, last_j )
+</pre>
+where next_i points to the next nonzero entry in column j below i,
+last_i points to the previous nonzero entry in column j above i,
+and next_j and last_j similarly point to the neighboring nonzero
+entries in the same row.
+
+<p>
+<center><img src="SparseLinkedList.gif"></center>
+<p>
+
+Indeed, by thinking of A as a <i>block matrix</i>
+<pre>
+       [ A11  ...  A1n ]
+   A = [ ...  ...  ... ] 
+       [ An1  ...  Ann ] 
+</pre>
+where the Aij are submatrices which could themselves be sparse,
+we see that we could represent A hierarchically, with one scheme
+to represent the subset of nonzero submatrices Aij present in A,
+and other schemes for each Aij.
+
+<p>
+The otherwise very flexible linked list scheme has two drawbacks.
+First, it requires as much as 7 times as much storage as 
+needed just for the nonzero entries themselves.
+Second, there is no <i>memory locality</i>, i.e.
+operating on a single row of m entries requires 2m memory
+accesses (to get the data and the next_i pointers) which may
+or may not be in nearby memory locations; recall that
+high performance in the presence of memory hierarchies
+requires that data to be accessed together be stored together.
+
+<p>
+Since algorithmic efficiency depends on storage scheme,
+most research has focused on choosing a scheme compatible
+with high performance. Matrices stored in different ways
+must first be converted to the scheme required by the
+algorithm. One of the basic storage schemes we will use 
+is <i>column compressed storage</i>. This scheme stores
+the nonzero entries by column in one contiguous array
+called <i>values</i>. In addition, there is an equally
+long array <i>row_ind</i> of the row indices of each
+value (in otherwords, values(i) lies in row row_ind(i)).
+Finally, there is a (generally much shorter) array
+called <i>col_ptr</i>, indicating where in the values
+and row_ind arrays each column begins: column j starts
+at index col_ptr(j) (and ends at col_ptr(j+1)-1).
+
+<p>
+For example, the matrix above would be stored as follows:
+<pre>
+           [ 1.  0   2.  0  4. ]  
+       A = [ 0   4.  6.  0  0  ]  
+           [ 5.  3.  0   0  9. ]  
+
+ values  = [ 1.  5.  4.  3.  2.  6.  4.  9. ]
+ row_ind = [ 1   3   2   3   1   2   1   3  ]
+ col_ptr = [ 1   3   5   7   7   9 ]
+</pre>
+This storage scheme allows fast access to columns but not
+rows of A, and requires about twice as much storage as
+for the nonzero entries alone. Since it is not convenient
+to access rows with this scheme, our algorithms using
+this scheme will be <i>column oriented</i>.
+
+<p>
+Later we will discuss improvements on column compressed storage
+to enhance locality of memory accesses even more.
+
+<h3><a name="link_2.3">Left looking versus Right looking Cholesky</h3>
+
+Now we have to be more specific about how Cholesky works. Our starting
+point will be Gaussian elimination without pivoting:
+
+<pre>
+ ... for each column i,
+ ... zero it out below the diagonal by
+ ... adding multiples of row i to later rows
+ for i = 1 to n-1
+     ... each row j below row i
+     for j = i+1 to n
+         ... add a multiple of row i to row j
+         for k = i to n
+             A(j,k) = A(j,k) -
+                     (A(j,i)/A(i,i)) * A(i,k)
+</pre>
+Eliminating redundant work as in 
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture12/lecture12.html#link_3">Lecture 14</a> yields the algorithm
+<pre>
+  for i = 1 to n-1
+    for j = i+1 to n
+        A(j,i) = A(j,i)/A(i,i)   ... store L on top of A
+    for k = i+1 to n             ... we have also reversed the
+        for j = i+1 to n         ... order of the j and k loops
+            A(j,k) = A(j,k) - A(j,i) * A(i,k)
+</pre>
+at the end of which A has been overwritten by L and U. To change this
+into Cholesky, we proceed in two steps. First, we modify the algorithm
+so that U=L<sup>T</sup>:
+<pre>
+  for i = 1 to n-1
+    A(i,i) = sqrt(A(i,i))  ... if error, A not positive definite
+    for j = i+1 to n
+        A(j,i) = A(j,i)/A(i,i)  ... store L on top of A
+        A(i,j) = A(i,j)/A(i,i)  ... compute U in place too
+    for k = i+1 to n
+        for j = i+1 to n
+            A(j,k) = A(j,k) - A(j,i) * A(i,k)
+</pre>
+and then we use the fact that U=L<sup>T</sup> to eliminate all
+references to the upper triangle of A:
+<pre>
+  for i = 1 to n-1
+    A(i,i) = sqrt(A(i,i))  ... if error, A not positive definite
+    for j = i+1 to n
+        A(j,i) = A(j,i)/A(i,i)  ... store col i of L on top of A
+    for k = i+1 to n
+        for j = k to n     ... update only on and below diagonal
+            A(j,k) = A(j,k) - A(j,i) * A(k,i)  ... A(k,i)=A(i,k)
+</pre>
+To simplify discussion, we abbreviate this algorithm as
+<pre>
+  for i = 1 to n-1
+    cdiv(i)   ... update column j
+    for k = i+1 to n
+        cmod(k,i)  ... update column k by column i
+                   ... only necessary if A(k,i)=L(k,i) nonzero
+</pre>
+Here cdiv(i) computes the final value of column i by performing
+<pre>
+    A(i,i) = sqrt(A(i,i))  ... if error, A not positive definite
+    for j = i+1 to n
+        A(j,i) = A(j,i)/A(i,i)  ... store col i of L on top of A
+</pre>
+and cmod(k,i) adds A(k,i) times column i to column k:
+<pre>
+        for j = k to n     ... update only on and below diagonal
+            A(j,k) = A(j,k) - A(j,i) * A(k,i)  
+</pre>
+It is important to note that cmod(k,i) does something useful
+only if A(k,i) is nonzero. This is one of the ways we
+exploit sparsity to avoid floating point operations
+(the other way is to exploit sparsity in columns i and k
+themselves). 
+<p>
+To express this more formally, we define
+<pre>
+  Struct(L<sub>*i</sub>) = { k.gt.i such that L<sub>ki</sub> is nonzero }
+</pre>
+In other words, Struct(L<sub>*i</sub>) is the list of row indices k
+of the nonzero entries below the diagonal of column i of L.
+It lists the columns to the right of i that depend on column i.
+These are the only values of k for which we need to call cmod(k,i)
+<p>
+This lets us rewrite sparse Cholesky as
+<pre>
+  for i = 1 to n-1
+    cdiv(i)   
+    for k in Struct(L<sub>*i</sub>)
+        cmod(k,i)  
+</pre>
+We call this version of Cholesky <i>right-looking</i>.
+It is also sometimes called 
+<i>fan-out</i>,
+<i>submatrix</i>, 
+or
+<i>data driven</i>
+Cholesky in the literature, because as soon as column
+i is computed (by cdiv(i)), it is used to update all columns k to its
+"right" that depend on it (i.e. column i is "fanned-out" to
+update the "submatrix" to its right as soon as its "data" is available).
+
+<p>
+The following picture illustrates right-looking Choleksy 
+on the 12-by-12 matrix shown below.
+<p>
+<center><img src="ExampleSparseCholesky.gif"></center>
+<p>
+At step i=4 of right-looking Cholesky, columns 1 to 3 of L have been 
+completed by the end of the previous step, cdiv(4) has been called to complete 
+column 4 of L, and we are about to call cmod(k,4) for
+k in Struct(L<sub>*4</sub>) = { 7, 8, 11 }. The red and black 
+Xs below mark the entries
+updated by the calls to cmod(7,4), cmod(8,4) and cmod(11,4).
+
+<p>
+<center><img src="SparseCholeskyRight.gif"></center>
+<p>
+
+Here is an alternative way to organize the algorithm. Instead of
+using column i to update all later columns that depend on it, so that any
+particular column is updated sporadically, as columns it depends
+on are completed, 
+we perform <i>all</i> updates to column i at the same
+time, when all columns to its left are finished. To write this
+formally, we define
+<pre>
+  Struct(L<sub>k*</sub>) = { i.lt.k such that L<sub>ki</sub> is nonzero }
+</pre>
+Struct(L<sub>k*</sub>) is a list of indices of
+nonzeros in row k of L. It lists the columns to the left of k on which
+column k depends. This lets us write the algorithm
+<pre>
+  for k = 1 to n
+    for i in Struct(L<sub>k*</sub>)
+        cmod(k,i)  
+    cdiv(k)   
+</pre>
+This version of Cholesky is called <i>left-looking</i>.
+It is also sometimes called 
+<i>fan-in</i>
+or
+<i>demand driven</i>
+Cholesky in the literature, because in order to compute column k,
+we "fan-in" the columns to its "left" that it "demands" in order
+to update itself.
+
+<p>
+The following picture illustrates left-looking Choleksy at step k=4,
+on the same 12-by-12 matrix as above. At this point, 
+columns 1 to 3 of L were completed by the end of the previous step, 
+and we are about to call cmod(4,i) for
+i in Struct(L<sub>4*</sub>) = { 1, 2 }. The red and black
+Xs below mark the entries
+updated by the calls to cmod(4,1) and cmod(4,2).
+There is no fill-in in the first 3 columns of L; the
+first fill-in occurs in column 4 as indicated by the red Xs.
+
+<p>
+<center><img src="SparseCholeskyLeft.gif"></center>
+<p>
+
+<p>
+Right-looking and left-looking are not the only ways to organize
+the work done by Cholesky, but to discuss other options we need to
+explore the dependencies of columns on one another in more detail
+in the next section.
+
+
+<h3><a name="link_2.4">The Elimination Tree and Sources of Parallelism</h3>
+
+The data structures Struct(L<sub>*i</sub>) and Struct(L<sub>k*</sub>) 
+describe the dependencies of columns to right of column i on column i,
+and of column k on columns to the left of column k, respectively. 
+Taken together, all these structures imply a <i>partial order</i> on the 
+order in which all the cdiv(k) and cmod(k,i) operations can take place.
+We would like to build a single data structure to capture this partial
+order, and display exactly what operations can be performed at the
+same time; this is essential to analyze what parallelism is available. 
+The data structure is
+called the <b>elimination tree</b> of A (or <b>e-tree</b> for short)
+and is defined as follows.
+
+<p>
+Let i be a column of A.
+We define <b>parent(i)</b> to be the index k of the first nonzero in
+Struct(L<sub>*i</sub>), i.e. the first nonzero below the diagonal
+in column i of L. Recalling how Cholesky works, this is the first
+column to the right of column i, that depends on column i.
+In particular, column i must be completely computed before
+column parent(i). This parent relationship defines the e-tree of A. 
+For example, the following is the e-tree of the 12-by-12 matrix
+illustrated above:
+
+<p>
+<center><img src="SparseCholeskyEtree.gif"></center>
+<p>
+
+
+Here is the basic fact about elimination trees, whose proof we omit.
+<p>
+<b>Proposition.</b> It is possible to compute the columns of
+the Cholesky factorization of A in any order consistent with
+computing the children c of column i in the e-tree before computing column i
+(a <i>post-order</i> traversal of the e-tree).
+In particular 
+<menu>
+<li> cdiv(c) must be called before cdiv(i) for all children c of i,
+<li> all cmod(k,i) (for k in Struct(L<sub>*i</sub>))
+     must be called after cdiv(i), and
+<li> all cmod(k,i) (for i in Struct(L<sub>k*</sub>))
+     must be called before cdiv(k).
+</menu>
+<p>
+
+This lets a write a "most general" version of sparse Cholesky,
+which includes all possible orderings (such as right-looking
+or left-looking) as special cases. The Task-Queue maintains
+a list of all tasks (cdiv(i) or cmod(k,i)) that are currently
+ready to execute:
+
+<pre>
+  Task-Queue = {cdiv(i) for all leaves i of the e-tree}
+  While Task-Queue not empty
+    remove a task from the Task-Queue  ... any one will do
+    if task = cdiv(i) then
+       perform cdiv(i)
+       for all k in Struct(L<sub>*i</sub>)
+           add cmod(k,i) to Task-Queue 
+    else if task = cmod(k,i)
+       perform cmod(k,i)
+       if this was last cmod of column k, 
+            add cdiv(k) to Task-Queue
+    endif
+</pre>
+
+Depending on the order in which we remove tasks from the Task-Queue,
+we could get a left-looking algorithm, a right-looking algorithm, or one of
+many others. 
+
+<p>
+In particular, since any task from the Task-Queue is
+ready to execute, a parallel algorithm could execute <i>any</i> subset
+of the tasks currently in the Task-Queue in parallel
+(note that if we try to execute cmod(k,i) and cmod(k,j) in parallel,
+both will try to update column k simultaneously, so some locking
+is needed to prevent a race condition). Thus, the above algorithm becomes
+a parallel algorithm if each processor executes it simulateously,
+with a common global Task-Queue from which processors remove and add tasks.
+
+<p>
+Let us illustrate this Proposition on some more examples.
+The figure below illustrates a 7-by-7 tridiagonal matrix
+in the natural order.  In this simple example, where there 
+is no fill-in, the e-tree is a simple chain, and tells us
+the simple and obvious fact that column i must be computed 
+before column i+1. 
+
+<p>
+<center><img src="Tridi07EtreeNatural.gif"></center>
+<p>
+
+Slightly more interesting is the following matrix, which
+is the same 7-by-7 tridiagonal matrix with its rows
+and columns permuted into the order [1 3 2 5 7 6 4].
+We have also added a graph of the whole L factor in
+the bottom right, with green edges added to represent
+the entries of L that are not also tree edges (in other
+words, there is one edge per offdiagonal nonzero of L,
+or equivalently one edge per call to cmod):
+
+<p>
+<center><img src="Tridi07EtreeNstDis.gif"></center>
+<p>
+
+The reader may well ask what advantage there is in the second
+ordering, since there is more fill-in (2 versus 0)
+and more flops (35 versus 25). The advantage is parallelism,
+since the elimination tree is no longer a chain. In fact, since
+columns 1, 2, 4 and 5 have no children, they can be
+computed in parallel. Then, columns 3 and 6 can be computed
+in parallel, and finally column 7. 
+
+<p>
+In other words, with enough processors (and memory bandwidth!) the time 
+to perform sparse Cholesky in parallel depends essentially on the 
+<i>height</i> of the elimination tree.
+(It is also possible to 
+extract parallelism by having more than one processor participate in
+a single cdiv or cmod; we will discuss this later.)
+
+<p>
+In general, for an n-by-n tridiagonal matrix, the natural
+order results in a chain of height n as an e-tree, taking
+n parallel steps to compute. In contrast, nested dissection
+yields an e-tree of height log<sub>2</sub> n. 
+(The reader may wish to compare this O(log<sub>2</sub> n)
+solution of a tridiagonal system of equations with the
+one we presented based on
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture14.html#link_8">
+parallel prefix</a>.)
+
+<p>
+For example, the following figure shows n=127 with nested dissection ordering:
+
+<p>
+<center><img src="Tridi127EtreeNstDis.gif"></center>
+<p>
+
+Here is our 12-by-12 example from earlier, including a graph of L:
+
+<p>
+<center><img src="SparseCholeskyEtreeAll.gif"></center>
+<p>
+
+We will see other examples below as well.
+
+<h3><a name="link_2.5">Choosing a permutation P</h3>
+
+In this section we will discuss three popular permuations. Recall that
+the goal of choosing a permutation is threefold:
+
+<menu>
+<li> minimize the storage needed for L,
+<li> minimize the flop count to compute L, and
+<li> maximize the parallelism available in computing L.
+</menu>
+
+It is not always possible to simultaneously achieve these goals.
+For example, in the last section we saw that for tridiagonal
+matrices, the natural order minimized storage (no fill at all)
+and also flop count, whereas the nested dissection ordering
+optimized parallelism, but required fill-in and extra flops.
+Nonetheless, nested dissection did not require significantly more
+storage or flops than the absolute minimum; it is fortunately
+often the case that all three goals can be achieved simultaneously,
+if only approximately.
+
+<p>
+Furthermore, even achieving just one of these goals <i>exactly</i> is
+an NP-complete problem, meaning that the best known algorithms take
+a very long time to run, in fact asymptotically longer than 
+dense Cholesky. So instead of exact solutions we will resort to
+heuristics.
+
+<p>
+It turns out that we have seen all but one of these heuristics
+before, in the context of 
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture18/lecture18.html">
+<i>graph partitioning</i></a>. After explaining the one new
+heuristic <i>minimum degree ordering</i> we return to the others,
+<i>Reverse Cuthill-McKee</i> (which is closely related to
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture18/lecture18.html#link_4.1"><i>breadth first search</i></a>),
+and
+<i>Nested Dissection</i> (which can actually use any of the other
+graph partitioning algorithms discussed in 
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture18/lecture18.html">
+Lectures 20, 21</a>, or
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture20/lecture20.html">
+23</a>.
+
+<h4><a name="link_2.5.1">Minimum Degree -- <i>UNDER CONSTRUCTION</i></h4>
+
+<! To illustrate the minimum degree algorithm, it suffices to consider >
+<! the first step: choosing the column to make the first column of the >
+<! permuted matrix. A very simple "greedy" criterion is to choose the >
+<! column that will minimize the number of floating point operations >
+<! of the first step of right-looking Cholesky. >
+
+<! def, illustration on small matrix/graph - show clique formation >
+<! illustrate on 12-by-12, tridiagonal, discrete Poisson >
+
+<h4><a name="link_2.5.2">Reverse Cuthill-McKee (Breadth First Search) -- <i>UNDER CONSTRUCTION</i></h4>
+
+<! def, illustration on small matrix/graph - show tridiagonality>
+<! why reverse? >
+<! connection to graph partitioning >
+<! illustrate on 12-by-12, tridiagonal, discrete Poisson >
+
+<h4><a name="link_2.5.2">Nested Dissection (Graph Partitioning) -- <i>UNDER CONSTRUCTION</i></h4>
+
+<! def, illustration on small matrix/graph - show partitioning step by step>
+<! connection to graph partitioning? >
+<! illustrate on 12-by-12, tridiagonal, discrete Poisson >
+
+<h3><a name="link_2.6">Exploiting the Memory Hierarchy -- <i>UNDER CONSTRUCTION</i></h3>
+
+So far in our discussion the basic units of computation have been calls
+to cdiv and cmod, with most of the work being calls to cmod.
+In the language of 
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture02.html">Lecture 2</a>,
+cmod is a <i>saxpy</i>, or <i>Level 1 BLAS (Basic Linear Algebra Subroutine</i>.
+As discussed in
+<a href="http://HTTP.CS.Berkeley.EDU/~demmel/cs267/lecture02.html">Lecture 2</a>,
+Level 1 BLAS do not use the memory hierarchy as well as their Level 2 
+(matrix-vector multiplication) and Level 3 (matrix-matrix multiplication)
+counterparts. In this section we discuss two approaches to exploiting
+higher level BLAS: <i>supernodes</i>, which are used in the context of
+left-looking Cholesky, and <i>multifrontal Cholesky</i>, which is
+right looking.
+
+<h4><a name="link_2.6.1">Supernodes -- <i>UNDER CONSTRUCTION</i></h4>
+
+<h4><a name="link_2.6.2">Multifrontal Cholesky -- <i>UNDER CONSTRUCTION</i></h4>
+
+<h2><a name="link_3">Parallel Sparse Choleksy on Shared Memory -- <i>UNDER CONSTRUCTION</i></h2>
+
+<h2><a name="link_4">Parallel Sparse Choleksy on Distributed Memory -- <i>UNDER CONSTRUCTION</i></h2>
+
+<h2><a name="link_5">References -- <i>UNDER CONSTRUCTION</i></h2>
+
+<! Left: supernodal vs column >
+<! Right: multifrontal vs submatrix >
+
